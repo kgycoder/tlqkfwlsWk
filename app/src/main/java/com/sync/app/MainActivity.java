@@ -1065,6 +1065,17 @@ public class MainActivity extends AppCompatActivity {
         return sc;
     }
 
+    /** 검색어 토큰 중 제목+아티스트+앨범에 들어 있는 비율 (공백 제거 형태도 허용: "밤 편지" ↔ "밤편지") */
+    private static double catCover(String[] qt, String q, String title, String artist, String album) {
+        if (qt.length == 0) return 1;
+        String all = ytmNorm(title) + " " + ytmNorm(artist) + " " + ytmNorm(album);
+        String flat = all.replace(" ", "");
+        if (flat.contains(q.replace(" ", ""))) return 1;
+        int hit = 0;
+        for (String w : qt) if (all.contains(w) || flat.contains(w)) hit++;
+        return hit / (double) qt.length;
+    }
+
     private static String catKey(String title, String artist) {
         String t = ytmNorm(title.replaceAll("\\(.*?\\)|\\[.*?\\]", " "));
         t = t.replaceAll("\\b(feat|ft|with)\\b.*$", "").trim();
@@ -1127,7 +1138,11 @@ public class MainActivity extends AppCompatActivity {
                 if (vt.contains("audio")) sc += 4;
                 if (sc > best) { best = sc; bv = v; }
             }
-            if (bv == null || best < 50) return null;
+            if (bv == null || best < 70) return null;
+            String bvt = ytmNorm(bv.optString("title")), bvc = ytmNorm(bv.optString("channel"));
+            boolean topic = bvc.endsWith("topic") && !ca.isEmpty() && bvc.contains(ca);
+            if (cd > 0 && bv.optInt("dur") > 0 && Math.abs(bv.optInt("dur") - cd) > 6) return null;   // 길이가 다르면 다른 버전
+            if (!topic && !ct.isEmpty() && !bvt.contains(ct)) return null;                           // 제목 불일치 + 공식 Topic 아님
             JSONObject t = new JSONObject();
             t.put("id", bv.optString("id"));
             t.put("title", title);
@@ -1156,6 +1171,8 @@ public class MainActivity extends AppCompatActivity {
 
         java.util.LinkedHashMap<String, JSONObject> m = new java.util.LinkedHashMap<>();
         java.util.HashMap<String, Double> sc = new java.util.HashMap<>();
+        java.util.HashMap<String, Double> cov = new java.util.HashMap<>();
+        java.util.HashMap<String, Integer> cnt = new java.util.HashMap<>();
         java.util.List<java.util.List<JSONObject>> srcs = java.util.Arrays.asList(li, ld, ly);
         for (int si = 0; si < 3; si++) {
             java.util.List<JSONObject> l = srcs.get(si);
@@ -1165,6 +1182,9 @@ public class MainActivity extends AppCompatActivity {
                 String key = catKey(c.optString("title"), c.optString("channel"));
                 if (key.startsWith("|")) continue;
                 double r = catRel(c.optString("title"), c.optString("channel"), c.optString("album"), q, qt, i);
+                double cv = catCover(qt, q, c.optString("title"), c.optString("channel"), c.optString("album"));
+                cov.put(key, Math.max(cv, cov.containsKey(key) ? cov.get(key) : 0));
+                cnt.put(key, (cnt.containsKey(key) ? cnt.get(key) : 0) + 1);
                 JSONObject cur = m.get(key);
                 if (cur == null) { m.put(key, c); sc.put(key, r + (si == 2 ? 10 : 0)); }
                 else {
@@ -1182,7 +1202,17 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }
-        java.util.ArrayList<String> keys = new java.util.ArrayList<>(m.keySet());
+        // 관련도 필터: 검색어를 (거의) 모두 포함하는 곡만. 너무 적으면 단계적으로 완화.
+        double need1 = qt.length >= 4 ? 0.75 : 0.99;
+        java.util.ArrayList<String> keys = new java.util.ArrayList<>();
+        for (String k : m.keySet()) {
+            boolean weakSingle = cnt.get(k) == 1 && sc.get(k) < 70;      // 한 곳에서만, 순위도 낮은 곡은 신뢰 낮음
+            if (cov.get(k) >= need1 && !weakSingle) keys.add(k);
+        }
+        if (keys.size() < 3) {
+            keys.clear();
+            for (String k : m.keySet()) if (cov.get(k) >= 0.5 && (cnt.get(k) > 1 || sc.get(k) >= 90)) keys.add(k);
+        }
         java.util.Collections.sort(keys, (a, b) -> Double.compare(sc.get(b), sc.get(a)));
 
         // 영상 연결이 필요한 곡(상위 limit 개)만 병렬로 검증하며 연결
