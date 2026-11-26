@@ -121,8 +121,8 @@ img {
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    backdrop-filter: blur(120px) saturate(1.2);
-    -webkit-backdrop-filter: blur(120px) saturate(1.2);
+    /* 성능: 전체화면 blur(120px) 백드롭은 캔버스가 갱신/스크롤될 때마다 화면 전체를 다시 블러해 발열·FPS 저하의 주원인이었다.
+       캔버스 자체가 이미 부드러운 그라디언트라 제거해도 시각 차이가 거의 없다. */
 }
 
 .bg-grain {
@@ -1598,8 +1598,8 @@ img {
     grid-area: bar;
     height: var(--bh);
     background: rgba(5,5,14,0.88);
-    backdrop-filter: blur(60px) saturate(1.6);
-    -webkit-backdrop-filter: blur(60px) saturate(1.6);
+    backdrop-filter: blur(20px) saturate(1.6);
+    -webkit-backdrop-filter: blur(20px) saturate(1.6);
     border-top: 1px solid var(--glass-bd);
     display: grid;
     grid-template-columns: 240px 1fr 240px;
