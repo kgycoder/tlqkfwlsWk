@@ -964,7 +964,13 @@ public class MainActivity extends AppCompatActivity {
                 if (kind.equals("song")) raw.add(it);
                 else { out.put(it); if (out.length() >= 20) break; }
             }
-            if (kind.equals("song")) out = ytmRankSongs(raw, query);
+            if (kind.equals("song")) {
+                try { out = ytmRankSongs(raw, query); }
+                catch (Throwable e) {                       // 재정렬 실패 시에도 원본 곡 목록은 반드시 반환
+                    out = new JSONArray();
+                    for (JSONObject t : raw) { out.put(t); if (out.length() >= 20) break; }
+                }
+            }
             JSONObject res = new JSONObject();
             res.put("items", out);
             ytmSend(id, res, null);
