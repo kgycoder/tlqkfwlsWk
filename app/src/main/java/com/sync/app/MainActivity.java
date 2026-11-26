@@ -556,6 +556,7 @@ public class MainActivity extends AppCompatActivity {
                 // 유튜브가 반환한 순서/구성 그대로 전달한다.
 
                 JSONObject t = new JSONObject();
+                t.put("views", parseViews(extractText(vr, "viewCountText")));
                 t.put("id", vid);
                 t.put("title", title);
                 t.put("channel", ch);
@@ -575,6 +576,23 @@ public class MainActivity extends AppCompatActivity {
                 return obj.getJSONArray("runs").getJSONObject(0).optString("text", "");
             return obj.optString("simpleText", "");
         } catch (JSONException e) { return ""; }
+    }
+
+    /** "조회수 1.2억회" / "3.4만회" / "1,234 views" / "5.6M views" → 숫자 */
+    private static long parseViews(String s) {
+        if (s == null || s.isEmpty()) return 0;
+        Matcher m = Pattern.compile("([0-9][0-9,]*\\.?[0-9]*)\\s*(억|만|천|[KMB])?", Pattern.CASE_INSENSITIVE).matcher(s);
+        if (!m.find()) return 0;
+        try {
+            double v = Double.parseDouble(m.group(1).replace(",", ""));
+            String u = m.group(2) == null ? "" : m.group(2).toUpperCase(java.util.Locale.ROOT);
+            switch (u) {
+                case "억": v *= 1e8; break; case "만": v *= 1e4; break; case "천": v *= 1e3; break;
+                case "K": v *= 1e3; break; case "M": v *= 1e6; break; case "B": v *= 1e9; break;
+                default: break;
+            }
+            return (long) v;
+        } catch (Exception e) { return 0; }
     }
 
     private int parseDur(String s) {
@@ -1153,7 +1171,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 if (vc.endsWith("topic") && !ca.isEmpty() && vc.contains(ca)) sc += 45;
                 else if (!ca.isEmpty() && vc.length() > 1 && (vc.contains(ca) || ca.contains(vc))) sc += 20;
-                if (!ct.isEmpty() && vt.contains(ct)) sc += 25; else sc -= 15;
+                if (!ct.isEmpty() && vt.replace(" ", "").contains(ct.replace(" ", ""))) sc += 25; else sc -= 15;
                 if (!ca.isEmpty() && vt.contains(ca)) sc += 3;
                 if (!titleAlt && CAT_ALT.matcher(vt).find()) sc -= 45;
                 if (vt.contains("audio")) sc += 4;
@@ -1163,7 +1181,7 @@ public class MainActivity extends AppCompatActivity {
             String bvt = ytmNorm(bv.optString("title")), bvc = ytmNorm(bv.optString("channel"));
             boolean topic = bvc.endsWith("topic") && !ca.isEmpty() && bvc.contains(ca);
             if (cd > 0 && bv.optInt("dur") > 0 && Math.abs(bv.optInt("dur") - cd) > 6) return null;   // 길이가 다르면 다른 버전
-            if (!topic && !ct.isEmpty() && !bvt.contains(ct)) return null;                           // 제목 불일치 + 공식 Topic 아님
+            if (!topic && !ct.isEmpty() && !bvt.replace(" ", "").contains(ct.replace(" ", ""))) return null;                           // 제목 불일치 + 공식 Topic 아님
             JSONObject t = new JSONObject();
             t.put("id", bv.optString("id"));
             t.put("title", title);
@@ -1174,6 +1192,7 @@ public class MainActivity extends AppCompatActivity {
             t.put("album", c.optString("album")); t.put("albumId", "");
             t.put("artistId", ""); t.put("year", c.optString("year"));
             t.put("kind", "song");
+            t.put("views", bv.optLong("views"));
             resolveCache.put(key, t);
             return t;
         } catch (Exception e) { return null; }
@@ -1250,24 +1269,33 @@ public class MainActivity extends AppCompatActivity {
             fut.put(k, resolvePool.submit(() -> catResolve(c)));
         }
         long dl = System.currentTimeMillis() + 8000;
-        JSONArray out = new JSONArray();
+        java.util.ArrayList<Object[]> fin = new java.util.ArrayList<>();
         java.util.HashSet<String> usedIds = new java.util.HashSet<>();
         for (String k : keys) {
             JSONObject c = m.get(k), t = null;
+            double bonus;
             if (!c.optString("id").isEmpty()) {
-                t = c;
+                t = c; bonus = 25;                                          // YouTube Music 상위 등록곡
                 if (t.optString("thumb").isEmpty()) t.put("thumb", "https://i.ytimg.com/vi/" + t.optString("id") + "/mqdefault.jpg");
             } else if (fut.containsKey(k)) {
                 try { t = fut.get(k).get(Math.max(100, dl - System.currentTimeMillis()), java.util.concurrent.TimeUnit.MILLISECONDS); }
                 catch (Exception e) { fut.get(k).cancel(true); }
-            }
+                bonus = t == null ? 0 : catViews(t.optLong("views"));
+            } else continue;
             if (t == null || !usedIds.add(t.optString("id"))) continue;
-            out.put(t);
-            if (out.length() >= 25) break;
+            fin.add(new Object[]{t, sc.get(k) + bonus});
         }
+        java.util.Collections.sort(fin, (a, b) -> Double.compare((Double) b[1], (Double) a[1]));
+        JSONArray out = new JSONArray();
+        for (Object[] a : fin) { out.put((JSONObject) a[0]); if (out.length() >= 25) break; }
         return out;
     }
 
+    /** 영상 조회수(실제 청취 규모) 가산점 — 같은 제목의 무명곡보다 대표곡이 위로 */
+    private static double catViews(long v) {
+        if (v <= 3000) return 0;
+        return Math.min(100, (Math.log10(v) - 3.5) * 28);
+    }
 
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.FutureTask<JSONArray>> songJobs =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -1281,7 +1309,7 @@ public class MainActivity extends AppCompatActivity {
             if (songJobs.size() > 24) { for (String k : new java.util.ArrayList<>(songJobs.keySet())) if (!k.equals(key)) songJobs.remove(k); }
             ft.run();
         } else ft = ex;
-        try { return ft.get(20, java.util.concurrent.TimeUnit.SECONDS); }
+        try { return ft.get(25, java.util.concurrent.TimeUnit.SECONDS); }
         catch (Exception e) { songJobs.remove(key, ft); throw e; }
     }
 
@@ -1355,13 +1383,13 @@ public class MainActivity extends AppCompatActivity {
             String query = msg.optString("query");
             if (kind.equals("song")) {
                 JSONObject r0 = new JSONObject();
-                r0.put("items", songsShared(query, Math.max(2, Math.min(20, msg.optInt("limit", 12)))));
+                r0.put("items", songsShared(query, Math.max(2, Math.min(20, msg.optInt("limit", 16)))));
                 ytmSend(id, r0, null);
                 return;
             }
             if (kind.equals("artist") || kind.equals("album")) {
                 JSONObject r1 = new JSONObject();
-                r1.put("items", entityFromSongs(kind, query, 12));
+                r1.put("items", entityFromSongs(kind, query, 16));
                 ytmSend(id, r1, null);
                 return;
             }
