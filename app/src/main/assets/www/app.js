@@ -1289,8 +1289,9 @@ function cachedCall(p, ttl = 900000) {
     return pr;
 }
 async function songSearch(q) {
+    const cq = (q || '').replace(/\s*\b(official\s*(music\s*video|video|audio|mv)|m\/v)\b/gi, '').replace(/\s+official$/i, '').trim() || q;
     try {
-        const r = await cachedCall({ type: 'musicSearch', kind: 'song', query: q });
+        const r = await cachedCall({ type: 'musicSearch', kind: 'song', query: cq });
         if (r.items?.length) return r.items;
     } catch { }
     const r = await cachedCall({ type: 'search', query: q });
@@ -1463,8 +1464,11 @@ async function doSearch(query) {
     _sStack.length = 0; _sRender = null; _miMode(false);
     /* 영상 검색(기존 그대로: 쿼리에 키워드를 덧붙이지 않음)과 곡/아티스트/앨범 검색을 동시에 요청 */
     const mq = kind => cachedCall({ type: 'musicSearch', kind, query: q }, 300000);
-    const [vr, sr, ar, br] = await Promise.allSettled([
-        cachedCall({ type: 'search', query: q }, 300000), mq('song'), mq('artist'), mq('album')]);
+    let [sr, ar, br] = await Promise.allSettled([mq('song'), mq('artist'), mq('album')]);
+    let vr = { status: 'fulfilled', value: { tracks: [] } };
+    const _ok = x => x.status === 'fulfilled' && (x.value.items || []).length;
+    if (!_ok(sr) && !_ok(ar) && !_ok(br))   // YouTube Music 이 실패/무응답일 때만 기존 영상 검색으로 폴백
+        vr = await Promise.allSettled([cachedCall({ type: 'search', query: q }, 300000)]).then(a => a[0]);
     const songs = sr.status === 'fulfilled' ? (sr.value.items || []) : [];
     const sid = new Set(songs.map(t => t.id));
     const d = {
@@ -1614,8 +1618,7 @@ async function loadRec(kw, rowId, useVideo) {
     row.innerHTML = `<div class="state" style="padding:28px 20px"><div class="spinner"></div></div>`;
     try {
         let tracks;
-        if (useVideo) { const res = await cachedCall({ type: 'search', query: kw }); tracks = rankMusicResults(res.tracks || []); }
-        else tracks = await songSearch(kw);
+        tracks = await songSearch(kw);
         if (!tracks.length) { row.innerHTML = `<div class="state" style="padding:28px"><p>결과 없음</p></div>`; return; }
         _trackRow(row, tracks.slice(0, 10));
     } catch { row.innerHTML = `<div class="state" style="padding:28px"><p>로드 실패</p></div>`; }
@@ -1974,7 +1977,7 @@ async function loadTopPicks(rowId) {
     try {
         const mixes = buildHeroMixes();
         const seed = tasteSeeds(1)[0];
-        const vs = mix => cachedCall({ type: 'search', query: mix.q }).then(res => rankMusicResults(res.tracks || []));
+        const vs = mix => songSearch(mix.q);
         const results = await Promise.all(mixes.map((mix, i) =>
             (i === 0 && seed
                 ? radioFor(seed.id).then(l => _mix([l], new Set([seed.id]), 2, 10)).then(l => l.length > 3 ? l : vs(mix))
@@ -2017,7 +2020,7 @@ async function _loadChartLegacy(rowId) {
     row.innerHTML = `<div class="state" style="padding:28px 20px"><div class="spinner"></div></div>`;
     try {
         const results = await Promise.all(AM_CHART_QUERIES.map(q =>
-            cachedCall({ type: 'search', query: q }).then(res => rankMusicResults(res.tracks || [])).catch(() => [])
+            songSearch(q).catch(() => [])
         ));
         const chart = [];
         const seen = new Set();
@@ -3281,8 +3284,7 @@ async function plAddModalSearch(q, immediate = false) {
         const res = document.getElementById('pl-add-modal-results');
         res.innerHTML = `<div class="pl-add-modal-hint"><div class="spinner" style="width:20px;height:20px;border-width:1.5px;margin:0 auto 8px"></div>검색 중...</div>`;
         try {
-            const data = await callCs({ type: 'search', query: q });
-            const tracks = sortMusicFirst(data.tracks || []).slice(0, 5); // 음악 우선 정렬 후, 한번에 나타나는 개수를 줄여 스캔하기 편하게
+            const tracks = (await songSearch(q)).slice(0, 5); // 음악 우선 정렬 후, 한번에 나타나는 개수를 줄여 스캔하기 편하게
             if (!tracks.length) { res.innerHTML = `<div class="pl-add-modal-hint">결과가 없어요</div>`; return; }
             res.innerHTML = '';
             const pl = plById(PL.curId);
@@ -4394,7 +4396,7 @@ async function _translateLyricsIfNeeded() {
             const text = obj.text;
             let tr = _trCache.get(text);
             if (tr === undefined) {
-                try { tr = await _translateText(text); _trCache.set(text, tr); }
+                try { tr = await _translateText(text); _trCache.set(text, tr); if (_trCache.size > 600) _trCache.delete(_trCache.keys().next().value); }
                 catch { tr = null; }
             }
             if (LY.videoId !== videoId) return;
