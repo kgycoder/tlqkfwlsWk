@@ -848,7 +848,7 @@ public class MainActivity extends AppCompatActivity {
         String vid = kind.isEmpty() ? ytmStr(r, "videoId") : "";
         JSONObject m = ytmMeta(runs);
         String art = ytmThumb(r);
-        if (!vid.isEmpty()) return ytmTrack(vid, name, m, art);
+        if (!vid.isEmpty()) { JSONObject t = ytmTrack(vid, name, m, art); t.put("vt", ytmStr(r, "musicVideoType")); return t; }
         if (!kind.isEmpty()) return ytmEntity(kind, bid, name, m, art);
         return null;
     }
@@ -888,27 +888,83 @@ public class MainActivity extends AppCompatActivity {
         } catch (JSONException ignored) {}
     }
 
+    private static final Pattern YTM_ALT = Pattern.compile(
+            "\\b(live|remix|instrumental|inst|acoustic|karaoke|cover|sped up|slowed|reverb|8d|nightcore|mr)\\b|라이브|리믹스|인스트|커버|노래방|반주");
+
+    private static String ytmNorm(String x) {
+        if (x == null) return "";
+        return java.text.Normalizer.normalize(x, java.text.Normalizer.Form.NFKC)
+                .toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+", " ").trim();
+    }
+
+    /** 곡 결과 후처리 — UGC/미등록 영상 제외, 쿼리 일치도로 재정렬, 같은 곡의 중복 수록 제거 */
+    private JSONArray ytmRankSongs(java.util.List<JSONObject> in, String query) throws JSONException {
+        String q = ytmNorm(query);
+        String[] qt = q.isEmpty() ? new String[0] : q.split(" ");
+        java.util.ArrayList<JSONObject> pool = new java.util.ArrayList<>();
+        for (JSONObject t : in) {
+            String vt = t.optString("vt");
+            boolean ugc = vt.contains("UGC") || vt.contains("PODCAST") || vt.contains("SHOULDER");
+            boolean reg = vt.contains("ATV") || !t.optString("albumId").isEmpty();   // 앨범/싱글/EP 에 실린 등록곡
+            if (!ugc && reg) pool.add(t);
+        }
+        if (pool.size() < 3) pool = new java.util.ArrayList<>(in);                   // 결과가 너무 적으면 필터 완화
+        java.util.HashMap<String, Object[]> best = new java.util.HashMap<>();
+        java.util.ArrayList<String> order = new java.util.ArrayList<>();
+        for (int i = 0; i < pool.size(); i++) {
+            JSONObject t = pool.get(i);
+            String nt = ytmNorm(t.optString("title")), na = ytmNorm(t.optString("channel")), nal = ytmNorm(t.optString("album"));
+            double sc = 100 - i * 2.0;
+            if (!q.isEmpty()) {
+                if (nt.equals(q)) sc += 60; else if (nt.contains(q)) sc += 25;
+                if (qt.length > 0) {
+                    String all = nt + " " + na + " " + nal; int hit = 0;
+                    for (String w : qt) if (all.contains(w)) hit++;
+                    double f = hit / (double) qt.length;
+                    sc += 40 * f;
+                    if (f < 0.5 && qt.length > 1) sc -= 20;
+                }
+                if (YTM_ALT.matcher(nt).find() && !YTM_ALT.matcher(q).find()) sc -= 35;
+            }
+            if (t.optString("vt").contains("ATV")) sc += 10;
+            if (t.optString("albumId").isEmpty()) sc -= 10;
+            String key = nt.replaceAll("\\b(feat|ft|with)\\b.*$", "").trim() + "|" + ytmNorm(t.optString("channel").split(",")[0]);
+            Object[] cur = best.get(key);
+            if (cur == null) { order.add(key); best.put(key, new Object[]{t, sc}); }
+            else if (sc > (Double) cur[1]) best.put(key, new Object[]{t, sc});
+        }
+        java.util.ArrayList<Object[]> arr = new java.util.ArrayList<>();
+        for (String k : order) arr.add(best.get(k));
+        java.util.Collections.sort(arr, (a, b) -> Double.compare((Double) b[1], (Double) a[1]));
+        JSONArray out = new JSONArray();
+        for (Object[] a : arr) { out.put((JSONObject) a[0]); if (out.length() >= 25) break; }
+        return out;
+    }
+
     private void doMusicSearch(JSONObject msg) {
         String id = msg.optString("id", "0");
         try {
             String kind = msg.optString("kind", "song");
+            String query = msg.optString("query");
             String p = kind.equals("artist") ? "EgWKAQIgAWoMEA4QChADEAQQCRAF"
                      : kind.equals("album")  ? "EgWKAQIYAWoMEA4QChADEAQQCRAF"
                                              : "EgWKAQIIAWoMEA4QChADEAQQCRAF";
             JSONObject body = new JSONObject();
-            body.put("query", msg.optString("query"));
+            body.put("query", query);
             body.put("params", p);
             JSONObject doc = new JSONObject(ytmCall("search", body));
             JSONArray out = new JSONArray();
             java.util.HashSet<String> seen = new java.util.HashSet<>();
+            java.util.ArrayList<JSONObject> raw = new java.util.ArrayList<>();
             for (Object o : ytmFind(doc, "musicResponsiveListItemRenderer")) {
                 if (!(o instanceof JSONObject)) continue;
                 JSONObject it = ytmList((JSONObject) o);
                 if (it == null || !it.optString("kind").equals(kind)) continue;
                 if (!seen.add(it.optString("id"))) continue;
-                out.put(it);
-                if (out.length() >= 20) break;
+                if (kind.equals("song")) raw.add(it);
+                else { out.put(it); if (out.length() >= 20) break; }
             }
+            if (kind.equals("song")) out = ytmRankSongs(raw, query);
             JSONObject res = new JSONObject();
             res.put("items", out);
             ytmSend(id, res, null);
