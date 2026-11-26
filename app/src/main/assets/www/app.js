@@ -1467,7 +1467,7 @@ async function doSearch(query) {
     let [sr, ar, br] = await Promise.allSettled([mq('song'), mq('artist'), mq('album')]);
     let vr = { status: 'fulfilled', value: { tracks: [] } };
     const _ok = x => x.status === 'fulfilled' && (x.value.items || []).length;
-    if (!_ok(sr) && !_ok(ar) && !_ok(br))   // YouTube Music 이 실패/무응답일 때만 기존 영상 검색으로 폴백
+    if (!_ok(sr))   // 곡 결과가 없을 때(YouTube Music 실패/무응답)는 기존 영상 검색으로 폴백
         vr = await Promise.allSettled([cachedCall({ type: 'search', query: q }, 300000)]).then(a => a[0]);
     const songs = sr.status === 'fulfilled' ? (sr.value.items || []) : [];
     const sid = new Set(songs.map(t => t.id));
