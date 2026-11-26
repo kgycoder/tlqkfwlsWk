@@ -1279,7 +1279,7 @@ function hideSug(id) { document.getElementById(id)?.classList.remove('on'); }
 const _YR = new Date().getFullYear();
 const _qc = new Map();   // 메모리 TTL 캐시 — 홈/검색의 중복 요청과 재렌더 때의 재요청 제거
 function cachedCall(p, ttl = 900000) {
-    const k = p.type + '|' + (p.kind || '') + '|' + (p.query || p.videoId || p.browseId || '') + '|' + (p.country || '');
+    const k = p.type + '|' + (p.kind || '') + '|' + (p.query || p.videoId || p.browseId || '') + '|' + (p.country || '') + '|' + (p.limit || '');
     const h = _qc.get(k);
     if (h && Date.now() - h.at < ttl) return h.p;
     const pr = callCs({ ...p });
@@ -1288,10 +1288,10 @@ function cachedCall(p, ttl = 900000) {
     pr.catch(() => { if (_qc.get(k)?.p === pr) _qc.delete(k); });
     return pr;
 }
-async function songSearch(q) {
+async function songSearch(q, n = 12) {
     const cq = (q || '').replace(/\s*\b(official\s*(music\s*video|video|audio|mv)|m\/v)\b/gi, '').replace(/\s+official$/i, '').trim() || q;
     try {
-        const r = await cachedCall({ type: 'musicSearch', kind: 'song', query: cq });
+        const r = await cachedCall({ type: 'musicSearch', kind: 'song', query: cq, limit: n });
         if (r.items?.length) return r.items;
     } catch { }
     const r = await cachedCall({ type: 'search', query: q });
@@ -1618,7 +1618,7 @@ async function loadRec(kw, rowId, useVideo) {
     row.innerHTML = `<div class="state" style="padding:28px 20px"><div class="spinner"></div></div>`;
     try {
         let tracks;
-        tracks = await songSearch(kw);
+        tracks = await songSearch(kw, 8);
         if (!tracks.length) { row.innerHTML = `<div class="state" style="padding:28px"><p>결과 없음</p></div>`; return; }
         _trackRow(row, tracks.slice(0, 10));
     } catch { row.innerHTML = `<div class="state" style="padding:28px"><p>로드 실패</p></div>`; }
@@ -1977,7 +1977,7 @@ async function loadTopPicks(rowId) {
     try {
         const mixes = buildHeroMixes();
         const seed = tasteSeeds(1)[0];
-        const vs = mix => songSearch(mix.q);
+        const vs = mix => songSearch(mix.q, 6);
         const results = await Promise.all(mixes.map((mix, i) =>
             (i === 0 && seed
                 ? radioFor(seed.id).then(l => _mix([l], new Set([seed.id]), 2, 10)).then(l => l.length > 3 ? l : vs(mix))
@@ -2020,7 +2020,7 @@ async function _loadChartLegacy(rowId) {
     row.innerHTML = `<div class="state" style="padding:28px 20px"><div class="spinner"></div></div>`;
     try {
         const results = await Promise.all(AM_CHART_QUERIES.map(q =>
-            songSearch(q).catch(() => [])
+            songSearch(q, 2).catch(() => [])
         ));
         const chart = [];
         const seen = new Set();
