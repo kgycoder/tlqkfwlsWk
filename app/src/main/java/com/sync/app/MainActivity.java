@@ -639,6 +639,8 @@ public class MainActivity extends AppCompatActivity {
        응답은 searchResult 타입(같은 id)으로 돌려보내 JS 브릿지(__sync/callCs)를 그대로 쓴다.
        구조 파싱은 경로 고정 대신 렌더러 키를 재귀 탐색해 응답 구조 변경에 강하게 만들었다. */
     private static final String YTM_VER = "1.20241127.01.00";
+    private volatile String ytmVer = YTM_VER;      // 오래된 클라이언트 버전이 거부되면 music.youtube.com 에서 최신 버전을 받아 교체
+    private volatile long ytmVerAt = 0;
     private static final Pattern YTM_DUR = Pattern.compile("^\\d{1,2}:\\d{2}(:\\d{2})?$");
     private static final Pattern YTM_YEAR = Pattern.compile("^(19|20)\\d{2}$");
     private static final Pattern YTM_TYPE = Pattern.compile(
@@ -650,13 +652,36 @@ public class MainActivity extends AppCompatActivity {
     /** 일시적인 400/5xx/네트워크 오류는 한 번 재시도 */
     private String ytmCall(String ep, JSONObject body) throws Exception {
         try { return ytmCallOnce(ep, body); }
-        catch (IOException e) { Thread.sleep(300); return ytmCallOnce(ep, body); }
+        catch (IOException e) {
+            Thread.sleep(300);
+            ytmRefreshVer();
+            return ytmCallOnce(ep, body);
+        }
+    }
+
+    /** 실패 시 YouTube Music 웹페이지의 현재 클라이언트 버전을 읽어 온다(10분에 한 번만). */
+    private synchronized void ytmRefreshVer() {
+        long now = System.currentTimeMillis();
+        if (now - ytmVerAt < 600000) return;
+        ytmVerAt = now;
+        try {
+            Request r = new Request.Builder().url("https://music.youtube.com/")
+                    .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124.0 Safari/537.36")
+                    .addHeader("Cookie", "SOCS=CAI; CONSENT=YES+1")
+                    .addHeader("Accept-Language", "ko-KR,ko;q=0.9").build();
+            try (Response resp = http.newCall(r).execute()) {
+                if (!resp.isSuccessful() || resp.body() == null) return;
+                String h = readUtf8(resp);
+                Matcher m = Pattern.compile("INNERTUBE_CLIENT_VERSION.{0,30}?(1\\.\\d{8}\\.\\d{2}\\.\\d{2})", Pattern.DOTALL).matcher(h);
+                if (m.find()) ytmVer = m.group(1);
+            }
+        } catch (Exception ignored) {}
     }
 
     private String ytmCallOnce(String ep, JSONObject body) throws Exception {
         JSONObject client = new JSONObject();
         client.put("clientName", "WEB_REMIX");
-        client.put("clientVersion", YTM_VER);
+        client.put("clientVersion", ytmVer);
         client.put("hl", "ko");
         client.put("gl", "KR");
         body.put("context", new JSONObject().put("client", client));
@@ -665,8 +690,9 @@ public class MainActivity extends AppCompatActivity {
                 .post(RequestBody.create(body.toString(),
                         MediaType.parse("application/json; charset=utf-8")))
                 .addHeader("X-YouTube-Client-Name", "67")
-                .addHeader("X-YouTube-Client-Version", YTM_VER)
+                .addHeader("X-YouTube-Client-Version", ytmVer)
                 .addHeader("Origin", "https://music.youtube.com")
+                .addHeader("Cookie", "SOCS=CAI; CONSENT=YES+1")
                 .addHeader("Referer", "https://music.youtube.com/")
                 .addHeader("Accept-Language", "ko-KR,ko;q=0.9,en;q=0.8")
                 .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) "
