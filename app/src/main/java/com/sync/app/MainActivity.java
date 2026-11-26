@@ -1025,7 +1025,7 @@ public class MainActivity extends AppCompatActivity {
             JSONObject ar = r.optJSONObject("artist"), al = r.optJSONObject("album");
             out.add(catItem(r.optString("title"), ar == null ? "" : ar.optString("name"),
                     al == null ? "" : al.optString("title"), r.optInt("duration"),
-                    al == null ? "" : al.optString("cover_big"), ""));
+                    al == null ? "" : al.optString("cover_big"), "").put("rank", r.optInt("rank")));
         }
         return out;
     }
@@ -1050,11 +1050,32 @@ public class MainActivity extends AppCompatActivity {
         return out;
     }
 
+    private static int catLev(String a, String b) {
+        if (Math.abs(a.length() - b.length()) > 2) return 9;
+        int[] d = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) d[j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            int prev = d[0]; d[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                int t = d[j];
+                d[j] = Math.min(Math.min(d[j] + 1, d[j - 1] + 1), prev + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
+                prev = t;
+            }
+        }
+        return d[b.length()];
+    }
+
+    /** Deezer rank(≈청취량 지표)를 가산점으로 — 같은 제목의 무명곡보다 대표곡이 위로 오게 한다 */
+    private static double catPop(int rank) {
+        if (rank <= 1000) return 0;
+        return Math.min(80, Math.max(0, (Math.log10(rank) - 3.0) * 26));
+    }
+
     private double catRel(String title, String artist, String album, String q, String[] qt, int idx) {
         String nt = ytmNorm(title), na = ytmNorm(artist), nal = ytmNorm(album);
         double sc = 100 - idx * 2.0;
         if (!q.isEmpty()) {
-            if (nt.equals(q)) sc += 60; else if (nt.contains(q)) sc += 25;
+            if (nt.equals(q) || catLev(nt, q) <= (q.length() >= 5 ? 1 : 0)) sc += 60; else if (nt.contains(q)) sc += 25;
             String all = nt + " " + na + " " + nal; int hit = 0;
             for (String w : qt) if (all.contains(w)) hit++;
             double f = qt.length == 0 ? 0 : hit / (double) qt.length;
@@ -1186,9 +1207,11 @@ public class MainActivity extends AppCompatActivity {
                 cov.put(key, Math.max(cv, cov.containsKey(key) ? cov.get(key) : 0));
                 cnt.put(key, (cnt.containsKey(key) ? cnt.get(key) : 0) + 1);
                 JSONObject cur = m.get(key);
-                if (cur == null) { m.put(key, c); sc.put(key, r + (si == 2 ? 10 : 0)); }
+                if (cur == null) { m.put(key, c); sc.put(key, r + (si == 2 ? 10 + Math.max(0, 25 - i * 4) : 0)); }
                 else {
-                    sc.put(key, Math.max(sc.get(key), r) + 15);                 // 다른 카탈로그에서도 확인됨
+                    sc.put(key, Math.max(sc.get(key), r) + 15 + (si == 2 ? Math.max(0, 25 - i * 4) : 0));   // 다른 카탈로그에서도 확인됨
+                    if (cur.optInt("rank") > c.optInt("rank")) c.put("rank", cur.optInt("rank"));
+                    else cur.put("rank", c.optInt("rank"));
                     if (si == 2 && !c.optString("id").isEmpty()) {              // YouTube Music 의 등록곡 id 는 그대로 사용
                         c.put("art", cur.optString("art").isEmpty() ? c.optString("art") : cur.optString("art"));
                         if (cur.optInt("dur") > 0) c.put("dur", cur.optInt("dur"));
@@ -1202,6 +1225,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }
+        for (String k : m.keySet()) sc.put(k, sc.get(k) + catPop(m.get(k).optInt("rank")));
         // 관련도 필터: 검색어를 (거의) 모두 포함하는 곡만. 너무 적으면 단계적으로 완화.
         double need1 = qt.length >= 4 ? 0.75 : 0.99;
         java.util.ArrayList<String> keys = new java.util.ArrayList<>();
@@ -1244,6 +1268,86 @@ public class MainActivity extends AppCompatActivity {
         return out;
     }
 
+
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.FutureTask<JSONArray>> songJobs =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 같은 검색어의 곡 검색은 한 번만 수행하고, 아티스트/앨범 검색이 그 결과를 함께 사용한다 */
+    private JSONArray songsShared(String query, int limit) throws Exception {
+        String key = query + "|" + limit;
+        java.util.concurrent.FutureTask<JSONArray> ft = new java.util.concurrent.FutureTask<>(() -> catalogSongSearch(query, limit));
+        java.util.concurrent.FutureTask<JSONArray> ex = songJobs.putIfAbsent(key, ft);
+        if (ex == null) {
+            if (songJobs.size() > 24) { for (String k : new java.util.ArrayList<>(songJobs.keySet())) if (!k.equals(key)) songJobs.remove(k); }
+            ft.run();
+        } else ft = ex;
+        try { return ft.get(20, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (Exception e) { songJobs.remove(key, ft); throw e; }
+    }
+
+    private java.util.List<JSONObject> ytmEntitySearch(String kind, String text) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("query", text);
+        body.put("params", kind.equals("artist") ? "EgWKAQIgAWoMEA4QChADEAQQCRAF" : "EgWKAQIYAWoMEA4QChADEAQQCRAF");
+        JSONObject doc = new JSONObject(ytmCall("search", body));
+        java.util.ArrayList<JSONObject> out = new java.util.ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (Object o : ytmFind(doc, "musicResponsiveListItemRenderer")) {
+            if (!(o instanceof JSONObject)) continue;
+            JSONObject it = ytmList((JSONObject) o);
+            if (it == null || !kind.equals(it.optString("kind")) || !seen.add(it.optString("id"))) continue;
+            out.add(it);
+        }
+        return out;
+    }
+
+    private static String entNorm(String n) {
+        return ytmNorm(n.replaceAll("\\(.*?\\)|\\[.*?\\]", " ").replaceAll("(?i)\\s-\\s(single|ep)$", ""));
+    }
+
+    /** 아티스트/앨범: 상위 곡(검증된 카탈로그)이 속한 아티스트·앨범을 우선하고, 검색어와 이름이 맞는 직접 결과만 추가 */
+    private JSONArray entityFromSongs(String kind, String query, int limit) throws Exception {
+        String q = ytmNorm(query);
+        String[] qt = q.isEmpty() ? new String[0] : q.split(" ");
+        boolean art = kind.equals("artist");
+        JSONArray songs;
+        try { songs = songsShared(query, limit); } catch (Exception e) { songs = new JSONArray(); }
+        java.util.ArrayList<String[]> hints = new java.util.ArrayList<>();
+        java.util.HashSet<String> hs = new java.util.HashSet<>();
+        for (int i = 0; i < songs.length() && hints.size() < 3; i++) {
+            JSONObject t = songs.getJSONObject(i);
+            String ar = t.optString("channel").split("[,&/]")[0].trim();
+            String name = art ? ar : t.optString("album").trim();
+            if (name.isEmpty() || !hs.add(entNorm(name))) continue;
+            hints.add(new String[]{art ? name : name + " " + ar, name});
+        }
+        java.util.ArrayList<java.util.concurrent.Future<java.util.List<JSONObject>>> fs = new java.util.ArrayList<>();
+        for (String[] h : hints) { final String tx = h[0]; fs.add(resolvePool.submit(() -> ytmEntitySearch(kind, tx))); }
+        java.util.concurrent.Future<java.util.List<JSONObject>> fd = resolvePool.submit(() -> ytmEntitySearch(kind, query));
+        JSONArray out = new JSONArray();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (int i = 0; i < hints.size(); i++) {
+            try {
+                String hn = entNorm(hints.get(i)[1]);
+                for (JSONObject it : fs.get(i).get(8, java.util.concurrent.TimeUnit.SECONDS)) {
+                    String nn = entNorm(it.optString("name"));
+                    boolean ok = nn.equals(hn) || catLev(nn, hn) <= 1 || (hn.length() >= 4 && nn.length() >= 4 && (nn.contains(hn) || hn.contains(nn)));
+                    if (ok && seen.add(it.optString("id"))) { out.put(it); break; }
+                }
+            } catch (Exception ignored) { fs.get(i).cancel(true); }
+        }
+        try {
+            for (JSONObject it : fd.get(8, java.util.concurrent.TimeUnit.SECONDS)) {
+                String nm = it.optString("name");
+                if (nm.toLowerCase(java.util.Locale.ROOT).matches("^topic\\b.*|.*\\s-\\s*topic$")) continue;
+                double cv = catCover(qt, q, nm, art ? "" : it.optString("artist"), "");
+                if (cv >= 0.99 && seen.add(it.optString("id"))) out.put(it);
+                if (out.length() >= 10) break;
+            }
+        } catch (Exception ignored) { fd.cancel(true); }
+        return out;
+    }
+
     private void doMusicSearch(JSONObject msg) {
         String id = msg.optString("id", "0");
         try {
@@ -1251,8 +1355,14 @@ public class MainActivity extends AppCompatActivity {
             String query = msg.optString("query");
             if (kind.equals("song")) {
                 JSONObject r0 = new JSONObject();
-                r0.put("items", catalogSongSearch(query, Math.max(2, Math.min(20, msg.optInt("limit", 12)))));
+                r0.put("items", songsShared(query, Math.max(2, Math.min(20, msg.optInt("limit", 12)))));
                 ytmSend(id, r0, null);
+                return;
+            }
+            if (kind.equals("artist") || kind.equals("album")) {
+                JSONObject r1 = new JSONObject();
+                r1.put("items", entityFromSongs(kind, query, 12));
+                ytmSend(id, r1, null);
                 return;
             }
             String p = kind.equals("artist") ? "EgWKAQIgAWoMEA4QChADEAQQCRAF"
